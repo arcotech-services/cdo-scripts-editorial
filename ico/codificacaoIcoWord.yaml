@@ -1,0 +1,330 @@
+name: Codificação ICO 1.2.3
+description: Script para criação de codificação e pauta iconográfica do documento
+host: WORD
+api_set: {}
+script:
+  content: >
+    // Codificação Iconografia - Arco Educação - 3 jul 2025 // Cleiton Gonçalves
+
+    /*
+
+    Script para criar ou remover retrancas da iconografia e criar pauta
+    iconográfica.
+
+    v1.1.5 - Código refatorado com base em modelo criado em Curitiba. 
+
+    v1.1.7 - Corrigido delimitador de caminho para casos Mac/Windows, array de
+    lista icono corrigida para limpar a cada uso. Condicional quando nenhuma
+    retranca for encontrada em Criar Pauta 
+
+    v1.1.8 - Alterada função criarPauta para capturar página da retranca.
+
+    v1.1.9 - Alterada função criarPauta para resultado condicionado.
+
+    v1.2.0 - Alterado método para contornar problema com identificação de página
+    no macOS
+
+    v1.2.1 - Código para criação de retrancas simplificado
+
+    v1.2.2 - Checkbox tipos altados para checked
+
+    v1.2.3 - Adicionados botões para escolha de número inicial
+
+    */
+
+
+    function obterVersaoScript() {
+      return "v1.2.3";
+    }
+
+
+    Office.onReady((info) => {
+      if (info.host === Office.HostType.Word) {
+        document.getElementById("btnCodificar").onclick = codificar;
+        document.getElementById("btnDescodificar").onclick = descodificar;
+        document.getElementById("btnCriarPauta").onclick = criarPauta;
+      }
+    });
+
+
+    async function codificar() {
+      await Word.run(async (context) => {
+        // Encontrando nome arquivo
+        const fileName = await obterNomeArquivo();
+
+        if (fileName == "") {
+          console.log("Salve o documento com a codificação adequada e tente novamente!");
+          return;
+        }
+
+        const doc = context.document;
+        const body = doc.body;
+
+        // Carrega todos os parágrafos
+        const paragraphs = body.paragraphs.load("items");
+        await context.sync();
+
+        // Criando prefixo a partir do nome do arquivo
+        const prefix = fileName.trim();
+
+
+        // Lê valores dos inputs e garante fallback em 1
+        let icoVal = parseInt(document.getElementById("txtIco").value);
+        let cartoVal = parseInt(document.getElementById("txtCarto").value);
+        let iluVal = parseInt(document.getElementById("txtIlu").value);
+
+        if (isNaN(icoVal) || icoVal < 1) {
+          icoVal = 1;
+          } else {
+            icoVal = icoVal;
+            }
+
+        if (isNaN(cartoVal) || cartoVal < 1) {
+          cartoVal = 1;
+          } else {
+            cartoVal = cartoVal;
+            }
+
+        if (isNaN(iluVal) || iluVal < 1) {
+          iluVal = 1;
+          } else {
+            iluVal = iluVal;
+            }
+
+        // Inicializa os contadores com base nos inputs
+        const counters = {
+          T: icoVal,
+          F: icoVal,
+          I: iluVal,
+          M: cartoVal,
+          CD: 1,
+        };
+
+        // Expressões regulares
+        const icoRegex = /\bico\b/;
+        const iluRegex = /\bilu\b/;
+        const cartoRegex = /\bcarto\b/;
+        const digRegex = /\bdig\b/;
+
+        for (let i = 0; i < paragraphs.items.length; i++) {
+          const paragraph = paragraphs.items[i];
+          const paragraphText = paragraph.text.trim().toLowerCase();
+
+          if (paragraphText.startsWith("<") && paragraphText.endsWith(">")) {
+            let code = "";
+
+            const tipo = determinarTipo(paragraphText, icoRegex, iluRegex, cartoRegex, digRegex);
+
+            if (tipo) {
+              const sufixo = gerarSufixo(tipo, prefix, counters);
+              code = `<<${sufixo}>>`;
+
+              // Carrega o estilo atual do parágrafo
+              paragraph.load("style");
+              await context.sync();
+
+              // Insere o código antes e aplica o mesmo estilo do parágrafo
+              const previousParagraph = paragraph.insertParagraph(` ${code}`, Word.InsertLocation.before);
+              previousParagraph.style = paragraph.style;
+            }
+          }
+        }
+
+        await context.sync();
+        console.log("Codificação adicionada!");
+      });
+    }
+
+
+    // Encontrando nome do arquivo
+
+    function obterNomeArquivo() {
+      return new Promise((resolve, reject) => {
+        Office.context.document.getFilePropertiesAsync((result) => {
+          if (result.status === Office.AsyncResultStatus.Succeeded) {
+            const url = result.value.url;
+            if (!url) {
+              console.log("O documento ainda não foi salvo.");
+              resolve("");
+            } else {
+              const delimiter = "";
+              if (/\//.test(url)) {
+                delimiter = "/";
+              } else if (/\\/.test(url)) {
+                delimiter = "\\";
+              } else {
+                console.log("Erro ao obter caminho do arquivo.");
+              }
+              const fullFileName = url.substring(url.lastIndexOf(delimiter) + 1);
+              const partsFileName = fullFileName.split(".");
+              resolve(partsFileName[0]);
+            }
+          } else {
+            console.error("Erro ao obter propriedades do arquivo:", result.error);
+            reject(result.error);
+          }
+        });
+      });
+    }
+
+
+    // Função para determinar o tipo do código
+
+    function determinarTipo(text, icoRegex, iluRegex, cartoRegex, digRegex) {
+      if (icoRegex.test(text)) {
+        if (text.includes("texto")) {
+          return "T";
+        } else if (text.includes("imagem")) {
+          return "F";
+        }
+      }
+
+      if (
+        (text.includes("arte:") || text.includes("dia:")) &&
+        (text.includes("reaproveitar") || text.includes("disponibilizar"))
+      ) {
+        if (text.includes("texto")) return "T";
+        if (text.includes("ilustração")) return "I";
+        if (text.includes("imagem") || text.includes("foto")) return "F";
+        if (text.includes("mapa")) return "M";
+      }
+
+      if (iluRegex.test(text)) return "I";
+      if (cartoRegex.test(text)) return "M";
+      if (digRegex.test(text)) return "CD";
+
+      return null;
+    }
+
+
+    // Função para gerar o sufixo com o prefixo e contador
+
+    function gerarSufixo(tipo, prefix, counters) {
+      const count = counters[tipo]++;
+      const padded = tipo === "CD" ? count.toString().padStart(3, "0") : count.toString().padStart(3, "0");
+      return `${prefix}_${tipo}${padded}`;
+    }
+
+
+    // Função para descodificar
+
+    async function descodificar() {
+      await Word.run(async (context) => {
+        Office.onReady((info) => {
+          if (info.host === Office.HostType.Word) {
+            Word.run(async (context) => {
+              const doc = context.document;
+              const body = doc.body;
+              // Carrega todos os parágrafos do documento
+              const paragraphs = body.paragraphs.load("items");
+              await context.sync();
+              // Itera sobre os parágrafos do documento
+              for (let i = paragraphs.items.length - 1; i >= 0; i--) {
+                // Itera de trás para frente para evitar problemas de índice ao remover parágrafos
+                const paragraph = paragraphs.items[i];
+                const paragraphText = paragraph.text.trim();
+                // Verifica se o parágrafo começa com "<<" e termina com ">>"
+                if (paragraphText.startsWith("<<") && paragraphText.endsWith(">>")) {
+                  paragraph.delete(); // Remove o parágrafo
+                }
+              }
+              await context.sync(); // Aplica as alterações
+              console.log("Codificação removida!");
+            });
+          }
+        });
+      });
+    }
+
+
+    // Função para criar Pauta iconográfica
+
+    async function criarPauta() {
+      const listIco = [];
+      const listCarto = [];
+      const listIlu = [];
+
+      const chkIco = document.getElementById("chkIco").checked;
+      const chkCarto = document.getElementById("chkCarto").checked;
+      const chkIlu = document.getElementById("chkIlu").checked;
+
+      await Word.run(async (context) => {
+        const body = context.document.body;
+        const paragraphs = body.paragraphs.load("items");
+        await context.sync();
+
+        for (let i = 0; i < paragraphs.items.length - 1; i++) {
+          const paragraph = paragraphs.items[i];
+          const paragraphText = paragraph.text.trim();
+
+          if (paragraphText.startsWith("<<") && paragraphText.endsWith(">>")) {
+            const nextParagraph = paragraphs.items[i + 1];
+
+            let pageNumber = "?";
+
+            try {
+              // método pages parece não ser suportado no macOS
+              const retrancaRange = paragraph.getRange();
+              const pages = retrancaRange.pages;
+              pages.load();
+              await context.sync();
+
+              if (pages.items.length > 0) {
+                const page = pages.items[0];
+                page.load("index");
+                await context.sync();
+                pageNumber = page.index.toString();
+              }
+            } catch (error) {}
+
+            const retranca = paragraphText.replace("<<", "").replace(">>", "").trim();
+            const descricao = nextParagraph.text.replace("<", "").replace(">", "").trim();
+            const codigo = retranca.toUpperCase();
+
+            const linha = pageNumber + "\t" + retranca + "\t" + descricao;
+
+            if (chkIco && /_(F|T)\d{3}$/.test(codigo)) {
+              listIco.push(linha);
+            }
+
+            if (chkCarto && /_M\d{3}$/.test(codigo)) {
+              listCarto.push(linha);
+            }
+
+            if (chkIlu && /_I\d{3}$/.test(codigo)) {
+              listIlu.push(linha);
+            }
+          }
+        }
+
+        if (chkIco) {
+          console.log(listIco.length ? listIco.join("\n") : "\tNenhuma ICO encontrada!");
+        }
+        if (chkCarto) {
+          console.log(listCarto.length ? listCarto.join("\n") : "\tNenhuma CARTO encontrada!");
+        }
+        if (chkIlu) {
+          console.log(listIlu.length ? listIlu.join("\n") : "\tNenhuma ILU encontrada!");
+        }
+      });
+    }
+  language: typescript
+template:
+  content: "<section class=\"ms-Fabric ms-font-m\">\n\tUtilize os botões abaixo para criar ou remover as codificações, ou criar a pauta iconográfica.\n</section>\n\n<section class=\"ms-Fabric samples ms-font-m\">\n\n\t<h3>Codificação</h3>\n\n\t<div style=\"margin-left: 20px;\">\n\t\t<label>ICO: <input type=\"text\" id=\"txtIco\" value=\"1\" style=\"width:28px;\"></label>\n\t\t<label>CARTO: <input type=\"text\" id=\"txtCarto\" value=\"1\" style=\"width:28px;\"></label>\n\t\t<label>ILU: <input type=\"text\" id=\"txtIlu\" value=\"1\" style=\"width:28px;\"></label>\n\t</div>\n\n\t<p style=\"display: flex; gap: 5px; margin-left: 0px;\">\n\t\t<button id=\"btnCodificar\" class=\"ms-Button\">\n\t\t\t<span class=\"ms-Button-label\">Codificar</span>\n\t\t\t</button>\n\t\t<button id=\"btnDescodificar\" class=\"ms-Button\">\n\t\t\t<span class=\"ms-Button-label\">Descodificar</span>\t\t\t\n\t\t\t</button>\n\t</p>\n\n\t<h4>Pauta iconográfica</h4>\n\t<div style=\"margin-left: 20px;\">\n\t\t<label><input type=\"checkbox\" id=\"chkIco\" checked> ICO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkCarto\" checked> CARTO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkIlu\" checked> ILU</label>\n\t</div>\n\n\t<p>\n\t\t<button id=\"btnCriarPauta\" class=\"ms-Button\">\n\t\t\t\t<span class=\"ms-Button-label\">Criar Pauta</span>\n\t\t\t</button>\n\t</p>\n\n\t<div id=\"versao\"></div>\n\n\t<script>\n\t\twindow.onload = function() {\n\t\t\t\ttry {\n\t\t\t\t\tdocument.getElementById(\"versao\").innerText = obterVersaoScript();\n\t\t\t\t} catch (e) {\n\t\t\t\t\tdocument.getElementById(\"versao\").innerText = \"Versão do script: (não disponível)\";\n\t\t\t\t\tconsole.error(\"Erro ao obter versão:\", e);\n\t\t\t\t}\n\t\t\t};\n\t</script>\n\n</section>"
+  language: html
+style:
+  content: |-
+    section.samples {
+        margin-top: 20px;
+    }
+
+    section.samples .ms-Button, section.setup .ms-Button {
+        display: block;
+        margin-bottom: 5px;
+        margin-left: 20px;
+        min-width: 80px;
+    }
+  language: css
+libraries: |
+  https://unpkg.com/office-ui-fabric-core@11.1.0/dist/css/fabric.min.css
+  https://unpkg.com/office-ui-fabric-js@1.5.0/dist/css/fabric.components.min.css
