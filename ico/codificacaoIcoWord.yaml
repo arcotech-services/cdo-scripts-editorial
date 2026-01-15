@@ -1,9 +1,9 @@
-name: Codificação ICO 1.4.0
+name: Codificação ICO 1.4.3
 description: Script para criação de codificação e pauta iconográfica do documento
 host: WORD
 api_set: {}
 script:
-  content: >-
+  content: >
     // Codificação Iconografia - Arco Educação - 3 jul 2025 // Cleiton Gonçalves
 
     /*
@@ -48,6 +48,11 @@ script:
 
     v1.4.0 - Adicionda função criar documento para Ilustração 
 
+    v1.4.1 - Adicionada lógica em gerarCopiaFiltrada para manter blocos de texto
+
+    v1.4.3 - Ajustado metodo para limpar campos antes de remover parágrafos em
+    gerarCopiaFiltrada
+
 
 
     ...
@@ -56,7 +61,7 @@ script:
 
 
     function obterVersaoScript() {
-      return "v1.4.0";
+      return "v1.4.3";
     }
 
 
@@ -98,8 +103,6 @@ script:
           fecharPopup();
           document.getElementById("status").innerText = "Processo cancelado!";
         };
-
-
       }
     });
 
@@ -129,7 +132,6 @@ script:
         } else {
           console.log("Pauta criada e copiada para a área de transferência!");
         }
-
       } catch (e) {
         console.error("Erro ao copiar:", e);
         console.log("Não foi possível copiar automaticamente. Copie manualmente.");
@@ -354,7 +356,8 @@ script:
 
             let pageNumber = "?";
 
-            try { // método pages parece não ser suportado no macOS
+            try {
+              // método pages parece não ser suportado no macOS
               const retrancaRange = paragraph.getRange();
               const pages = retrancaRange.pages;
               pages.load();
@@ -363,7 +366,7 @@ script:
               if (pages.items.length > 0) {
                 pageNumber = pages.items[0].index.toString();
               }
-            } catch (e) { }
+            } catch (e) {}
 
             const retranca = paragraphText.replace("<<", "").replace(">>", "").trim();
             const descricao = nextParagraph.text.replace("<", "").replace(">", "").trim();
@@ -393,10 +396,8 @@ script:
 
         // COPIA IMEDIATAMENTE
         copiarParaAreaDeTransferencia(resultadoFinal);
-
       });
     }
-
 
 
     /* ============================================================
@@ -413,38 +414,127 @@ script:
     }
 
 
-
     /* ============================================================
      GERANDO PAUTA PARA ILUSTRAÇÃO
      ============================================================ */
-
     async function gerarCopiaFiltrada() {
       const estilo = document.getElementById("estilos").value;
       document.getElementById("status").innerText = "Processando...";
 
+      // 1) Remove parágrafos que NÃO forem do estilo escolhido
       await Word.run(async (context) => {
         const body = context.document.body;
         const paragrafos = body.paragraphs;
 
-        // Carrega estilos dos parágrafos
+        // Carrega estilo dos parágrafos
         paragrafos.load("items/style");
         await context.sync();
 
         // Remove parágrafos que NÃO forem do estilo escolhido
         for (let i = paragrafos.items.length - 1; i >= 0; i--) {
+
           if (paragrafos.items[i].style !== estilo) {
-            paragrafos.items[i].delete();
+            await apagarParagrafoSeguro(paragrafos.items[i], context);
+          }
+
+        }
+
+        await context.sync();
+        console.log("Textos fora do estilo removidos!");
+      });
+
+      // 2) Mantém apenas blocos entre <ILU ...> e ...<END_BRF>
+      await Word.run(async (context) => {
+        const paragraphs = context.document.body.paragraphs;
+        paragraphs.load("items");
+        await context.sync();
+
+        const n = paragraphs.items.length;
+        const keep = new Array(n).fill(false);
+
+        let inBlock = false;
+        let foundAnyBlock = false;
+
+        // Varre do início para encontrar blocos
+        for (let i = 0; i < n; i++) {
+          const text = (paragraphs.items[i].text || "").trim();
+
+          // detecta início de bloco
+          if (!inBlock) {
+            if (text.startsWith("<ILU:")) {
+              inBlock = true;
+              foundAnyBlock = true;
+
+              // MANTER o <ILU:
+              keep[i] = true;
+
+              // Manter o parágrafo acima do <ILU:, no caso a retranca
+              if (i > 0) {
+                keep[i - 1] = true;
+              }
+
+              // Se o fim estiver no mesmo parágrafo
+              if (text.includes("<END_BRF>")) {
+                inBlock = false;
+              }
+            }
+          } else {
+            // DENTRO DO BLOCO → manter sempre
+            keep[i] = true;
+
+            // DETECTAR FIM DO BLOCO <END_BRF>
+            if (text.includes("<END_BRF>")) {
+              inBlock = false;
+
+              // Adicionar dois ENTERS após este parágrafo
+              const p = paragraphs.items[i];
+              p.insertParagraph("", Word.InsertLocation.after);
+              p.insertParagraph("", Word.InsertLocation.after);
+            }
+          }
+        }
+
+        // NENHUM BLOCO → não apagar nada
+        if (!foundAnyBlock) {
+          console.warn("Nenhum bloco encontrado.");
+          document.getElementById("status").innerText = "Nenhum bloco encontrado — nada removido.";
+          return;
+        }
+
+        // REMOVER OS PARÁGRAFOS QUE NÃO ESTÃO EM "keep"
+        for (let i = n - 1; i >= 0; i--) {
+          if (!keep[i]) {
+            await apagarParagrafoSeguro(paragraphs.items[i], context);
           }
         }
 
         await context.sync();
+        console.log("Textos fora dos blocos removidos!");
       });
 
       document.getElementById("status").innerText = "Concluído!";
     }
+
+
+    // Função auxiliar par remover parágrafos
+
+    async function apagarParagrafoSeguro(paragraph, context) {
+      try {
+        // 1) Limpa o conteúdo (remove fields / hyperlinks implícitos)
+        const range = paragraph.getRange();
+        range.clear();
+
+        await context.sync();
+
+        // 2) Agora sim, remove o parágrafo
+        paragraph.delete();
+      } catch (e) {
+        console.warn("Falha ao apagar parágrafo de forma segura:", e);
+      }
+    }
   language: typescript
 template:
-  content: "<section class=\"ms-Fabric samples ms-font-m\">\n\n\t<h3>Codificação</h3>\n\n\t<div style=\"margin-left: 20px; display: flex; gap: 10px;\">\n\t\t<label>F: <input type=\"text\" id=\"txtF\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>T: <input type=\"text\" id=\"txtT\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>M: <input type=\"text\" id=\"txtCarto\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>I: <input type=\"text\" id=\"txtIlu\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>D: <input type=\"text\" id=\"txtD\" value=\"1\" style=\"width:25px;\"></label>\n\t</div>\n\n\t<p style=\"display: flex; gap: 5px; margin-left: 0px;\">\n\t\t<button id=\"btnCodificar\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Codificar</span>\n        </button>\n\n\t\t<button id=\"btnDescodificar\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Descodificar</span>\n        </button>\n\t</p>\n\n\t<h4>Pauta iconográfica</h4>\n\n\t<div style=\"margin-left: 20px; display: flex; gap: 10px;\">\n\t\t<label><input type=\"checkbox\" id=\"chkIco\" checked> ICO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkCarto\" checked> CARTO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkIlu\" checked> ILU</label>\n\t</div>\n\n\t<p style=\"display: flex; gap: 10px;\">\n\t\t<button id=\"btnCriarPauta\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Criar Pauta</span>\n        </button>\n\n\t\t<button id=\"btnCopiarPauta\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Copiar Pauta</span>\n        </button>\n\t</p>\n\n\t<br>\n\t<hr style=\"height:2px;border-width:0;color:#d4dde0;background-color:#d4dde0\">\n\n\t<!-- PAUTA PARA ILU [1.4.0] -->\n\t<div>\n\t\t<h4>Gerar documento para Ilustração</h4>\n\n\t\t<div style=\"margin-left: 20px; gap: 10px;\">\n\t\t\t<label>Estilo que deseja manter:</label><br>\n\t\t\t<select id=\"estilos\">\n\t\t<option value=\"arco_RECADO_ICO\">arco_RECADO_ICO (CWB)</option>\n\t\t<option value=\"BRIEFING\">BRIEFING (SAS)</option>\n\t\t<option value=\"retranca\">retranca (COC)</option>\n\t\t</select>\n\t\t</div>\n\n\t\t<br>\n\t\t<button id=\"btnGerar\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Gerar Doc ILU</span>\n\t\t</button>\n\t\t<br>\n\t\t<div id=\"status\" style=\"color: green;\"></div>\n\t</div>\n\n\t<!-- MODAL POPUP -->\n\t<div id=\"modal\" style=\"\n\tdisplay:none;\n\tposition:fixed;\n\ttop:0; left:0;\n\twidth:100%; height:100%;\n\tbackground:rgba(0,0,0,0.5);\n\tjustify-content:center;\n\talign-items:center;\n\t\">\n\t\t<div style=\"\n\t\tbackground:white;\n\t\tpadding:20px;\n\t\tborder-radius:8px;\n\t\twidth:260px;\n\t\ttext-align:center;\n\t\tfont-family:Arial;\n\t\">\n\t\t\t<h3>Confirmação</h3>\n\t\t\t<p>Esta ação irá remover todo o conteúdo que não estiver com o estilo indicado, certifique-se que está\n\t\t\t\talterando\n\t\t\t\tuma <b>Cópia do Original</b>, deseja prosseguir?</p>\n\n\n\t\t\t<p style=\"display: flex; gap: 10px;\">\n\t\t\t\t<button id=\"simBtn\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Sim</span>\n\t\t\t\t</button>\n\n\t\t\t\t<button id=\"naoBtn\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Não</span>\n\t\t\t\t</button>\n\t\t\t</p>\n\n\t\t</div>\n\t</div>\n\n\t<!-- FIM PAUTA PARA ILU -->\n\n\t<div id=\"versao\" style=\"margin-top:20px; font-size:12px; color:#666;\"></div>\n\n\t<script>\n\t\twindow.onload = function () {\n            try {\n                document.getElementById(\"versao\").innerText = obterVersaoScript();\n            } catch (e) {\n                document.getElementById(\"versao\").innerText = \"Versão do script: (não disponível)\";\n                console.error(\"Erro ao obter versão:\", e);\n            }\n        };\n\t</script>\n\n</section>"
+  content: "<section class=\"ms-Fabric samples ms-font-m\">\n\n\t<h3>Codificação</h3>\n\n\t<div style=\"margin-left: 20px; display: flex; gap: 10px;\">\n\t\t<label>F: <input type=\"text\" id=\"txtF\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>T: <input type=\"text\" id=\"txtT\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>M: <input type=\"text\" id=\"txtCarto\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>I: <input type=\"text\" id=\"txtIlu\" value=\"1\" style=\"width:25px;\"></label>\n\t\t<label>D: <input type=\"text\" id=\"txtD\" value=\"1\" style=\"width:25px;\"></label>\n\t</div>\n\n\t<p style=\"display: flex; gap: 5px; margin-left: 0px;\">\n\t\t<button id=\"btnCodificar\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Codificar</span>\n        </button>\n\n\t\t<button id=\"btnDescodificar\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Descodificar</span>\n        </button>\n\t</p>\n\n\t<h4>Pauta iconográfica</h4>\n\n\t<div style=\"margin-left: 20px; display: flex; gap: 10px;\">\n\t\t<label><input type=\"checkbox\" id=\"chkIco\" checked> ICO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkCarto\" checked> CARTO</label>\n\t\t<label><input type=\"checkbox\" id=\"chkIlu\" checked> ILU</label>\n\t</div>\n\n\t<p style=\"display: flex; gap: 10px;\">\n\t\t<button id=\"btnCriarPauta\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Criar Pauta</span>\n        </button>\n\n\t\t<button id=\"btnCopiarPauta\" class=\"ms-Button\">\n            <span class=\"ms-Button-label\">Copiar Pauta</span>\n        </button>\n\t</p>\n\n\t<br>\n\t<hr style=\"height:2px;border-width:0;color:#d4dde0;background-color:#d4dde0\">\n\n\t<!-- PAUTA PARA ILU [1.4.0] -->\n\t<div>\n\t\t<h4>Gerar documento para Ilustração</h4>\n\n\t\t<div style=\"margin-left: 20px; gap: 10px;\">\n\t\t\t<label>Estilo que deseja manter:</label><br>\n\t\t\t<select id=\"estilos\">\n\t\t<option value=\"arco_RECADO_ART\">arco_RECADO_ART (CWB)</option>\n\t\t<option value=\"BRIEFING\">BRIEFING (SAS)</option>\n\t\t<option value=\"retranca\">retranca (COC)</option>\n\t\t</select>\n\t\t</div>\n\n\t\t<br>\n\t\t<button id=\"btnGerar\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Gerar Doc ILU</span>\n\t\t</button>\n\t\t<br>\n\t\t<div id=\"status\" style=\"color: green;\"></div>\n\t</div>\n\n\t<!-- MODAL POPUP -->\n\t<div id=\"modal\" style=\"\n\tdisplay:none;\n\tposition:fixed;\n\ttop:0; left:0;\n\twidth:100%; height:100%;\n\tbackground:rgba(0,0,0,0.5);\n\tjustify-content:center;\n\talign-items:center;\n\t\">\n\t\t<div style=\"\n\t\tbackground:white;\n\t\tpadding:20px;\n\t\tborder-radius:8px;\n\t\twidth:260px;\n\t\ttext-align:center;\n\t\tfont-family:Arial;\n\t\">\n\t\t\t<h3>Confirmação</h3>\n\t\t\t<p>Esta ação irá remover todo o conteúdo que não estiver com o estilo indicado, certifique-se que está\n\t\t\t\talterando\n\t\t\t\tuma <b>Cópia do Original</b>, deseja prosseguir?</p>\n\n\n\t\t\t<p style=\"display: flex; gap: 10px;\">\n\t\t\t\t<button id=\"simBtn\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Sim</span>\n\t\t\t\t</button>\n\n\t\t\t\t<button id=\"naoBtn\" class=\"ms-Button\">\n\t\t\t\t\t<span class=\"ms-Button-label\">Não</span>\n\t\t\t\t</button>\n\t\t\t</p>\n\n\t\t</div>\n\t</div>\n\n\t<!-- FIM PAUTA PARA ILU -->\n\n\t<div id=\"versao\" style=\"margin-top:20px; font-size:12px; color:#666;\"></div>\n\n\t<script>\n\t\twindow.onload = function () {\n            try {\n                document.getElementById(\"versao\").innerText = obterVersaoScript();\n            } catch (e) {\n                document.getElementById(\"versao\").innerText = \"Versão do script: (não disponível)\";\n                console.error(\"Erro ao obter versão:\", e);\n            }\n        };\n\t</script>\n\n</section>"
   language: html
 style:
   content: |-
